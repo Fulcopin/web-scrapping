@@ -2,6 +2,7 @@ import os
 import time
 import requests
 import re
+from urllib.parse import quote_plus  # Importante para codificar el término de búsqueda para la URL
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -11,120 +12,132 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 # --- CONFIGURACIÓN ---
-SEARCH_TERM = "escuela quiteña" 
-FOLDER_NAME = SEARCH_TERM.replace(" ", "_").lower()
-OUTPUT_FOLDER = os.path.join("raw_images", FOLDER_NAME)
-BASE_URL = "https://arcav1.uniandes.edu.co"
-SEARCH_PAGE_URL = f"{BASE_URL}/artworks"
-
+# ¡Cambia este término para cada artista que quieras descargar!
+SEARCH_TERM = "peru" 
 # --- FIN DE CONFIGURACIÓN ---
 
 def sanitize_filename(filename):
+    """Limpia una cadena para que sea un nombre de archivo válido."""
     return re.sub(r'[\\/*?:"<>|]', "", filename)
 
-def download_current_page_images(driver, wait):
-    """Función para descargar todas las imágenes de la página actualmente visible."""
+def download_images_on_page(driver, wait, output_folder):
+    """Descarga todas las imágenes de la página actual."""
     try:
+        # Espera a que al menos una miniatura esté presente
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.artwork-thumbnail")))
-        thumbnail_elements = driver.find_elements(By.CSS_SELECTOR, "div.artwork-thumbnail")
+        thumbnails = driver.find_elements(By.CSS_SELECTOR, "div.artwork-thumbnail")
         
-        print(f"  Encontradas {len(thumbnail_elements)} imágenes en esta página. Descargando...")
+        if not thumbnails:
+            print("  -> No se encontraron miniaturas de imágenes en esta página.")
+            return
+
+        print(f"  Encontradas {len(thumbnails)} imágenes. Procediendo a descargar...")
         
-        for i, thumb_element in enumerate(thumbnail_elements):
+        for thumb in thumbnails:
             try:
-                img_wrap_div = thumb_element.find_element(By.ID, "img-wrap")
-                style_attribute = img_wrap_div.get_attribute('style')
-                match = re.search(r"url\(['\"]?(.*?)['\"]?\)", style_attribute)
+                # Extraer la URL de la imagen del estilo CSS
+                img_wrap_div = thumb.find_element(By.CSS_SELECTOR, "div#img-wrap")
+                style_attr = img_wrap_div.get_attribute('style')
+                match = re.search(r"url\(['\"]?(.*?)['\"]?\)", style_attr)
                 if not match: continue
 
-                relative_url = match.group(1)
-                image_url = BASE_URL + relative_url
+                image_url = f"https://arcav1.uniandes.edu.co{match.group(1)}"
 
-                caption_element = thumb_element.find_element(By.CLASS_NAME, "caption")
-                title = caption_element.text.split('\n')[0] or f"img_{int(time.time())}_{i}"
+                # Extraer título y ID para el nombre del archivo
+                caption_text = thumb.find_element(By.CLASS_NAME, "caption").text
+                title = caption_text.split('\n')[0].strip() or f"sin_titulo_{int(time.time())}"
                 
-                try:
-                    artwork_id = thumb_element.find_element(By.TAG_NAME, 'a').get_attribute('href').split('/')[-1]
-                    filename = f"{artwork_id}_{sanitize_filename(title).strip().rstrip(',')}.jpg"
-                except:
-                    filename = f"{sanitize_filename(title).strip().rstrip(',')}_{int(time.time())}_{i}.jpg"
-
-                filepath = os.path.join(OUTPUT_FOLDER, filename)
+                # Obtener el ID de la obra desde el enlace para un nombre de archivo único
+                artwork_id = thumb.find_element(By.TAG_NAME, 'a').get_attribute('href').split('/')[-1]
+                filename = f"{artwork_id}_{sanitize_filename(title)}.jpg"
+                filepath = os.path.join(output_folder, filename)
                 
                 if os.path.exists(filepath):
+                    print(f"    - Saltando '{filename}' (ya existe).")
                     continue
                 
-                image_response = requests.get(image_url, stream=True, headers={'User-Agent': 'My-Art-Project-Scraper/5.0-pagination'})
-                image_response.raise_for_status()
+                # Descargar la imagen
+                response = requests.get(image_url, stream=True, headers={'User-Agent': 'ArtScraper/1.0'})
+                response.raise_for_status()
                 with open(filepath, 'wb') as f:
-                    for chunk in image_response.iter_content(chunk_size=8192): f.write(chunk)
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
                 
-                time.sleep(0.05)
+                print(f"    + Descargada '{filename}'.")
+                time.sleep(0.1) # Pequeña pausa para no sobrecargar el servidor
 
             except Exception as e:
-                print(f"    -> Error procesando una miniatura: {e}")
+                print(f"    ! Error procesando una miniatura: {e}")
+
     except TimeoutException:
-        print("  -> No se encontraron imágenes en esta página o tardaron demasiado en cargar.")
+        print("  -> Tiempo de espera agotado. No se encontraron imágenes en la página.")
 
+def run_scraper(search_term):
+    # Crear carpetas de salida
+    folder_name = search_term.replace(" ", "_").lower()
+    output_folder = os.path.join("data", "raw_images", folder_name) # Mejor guardar en data/raw_images
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+        print(f"Directorio creado: {output_folder}")
 
-def download_images_with_pagination(search_term):
-    if not os.path.exists(OUTPUT_FOLDER):
-        os.makedirs(OUTPUT_FOLDER)
-        print(f"Carpeta creada: {OUTPUT_FOLDER}")
-
+    # Configuración de Selenium
     chrome_options = Options()
-    # chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--log-level=3") 
-    service = Service() 
+    # chrome_options.add_argument("--headless") # Descomenta para ejecutar sin interfaz gráfica
+    chrome_options.add_argument("--log-level=3")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+    service = Service()
     driver = webdriver.Chrome(service=service, options=chrome_options)
     
     try:
-        print(f"Abriendo navegador y yendo a: {SEARCH_PAGE_URL}")
-        driver.get(SEARCH_PAGE_URL)
-        wait = WebDriverWait(driver, 20)
+        # Construir la URL de búsqueda directamente para mayor fiabilidad
+        encoded_search_term = quote_plus(search_term)
+        search_url = f"https://arcav1.uniandes.edu.co/artworks?utf8=✓&search={encoded_search_term}"
         
-        print(f"Buscando el término: '{search_term}'")
-        search_box = wait.until(EC.presence_of_element_located((By.ID, "search")))
-        search_box.send_keys(search_term)
-        
-        search_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "i.fa-search")))
-        driver.execute_script("arguments[0].click();", search_button)
+        print(f"Navegando directamente a la página de resultados para: '{search_term}'")
+        print(f"URL: {search_url}")
+        driver.get(search_url)
+        wait = WebDriverWait(driver, 15)
         
         page_number = 1
         while True:
-            print(f"\nProcesando Página #{page_number}...")
-            wait.until(EC.presence_of_element_located((By.CLASS_NAME, "pagination")))
+            print(f"\n--- Procesando Página #{page_number} ---")
             
-            download_current_page_images(driver, wait)
+            # Esperar a que la paginación esté visible como señal de que la página ha cargado
+            wait.until(EC.visibility_of_element_located((By.CLASS_NAME, "pagination")))
             
+            download_images_on_page(driver, wait, output_folder)
+            
+            # Intentar pasar a la siguiente página
             try:
+                # Busca el <li> que contiene el botón 'siguiente', asegurándose de que no esté deshabilitado
                 next_button_li = driver.find_element(By.CSS_SELECTOR, "li.next:not(.disabled)")
-                next_button = next_button_li.find_element(By.TAG_NAME, 'a')
+                next_button_a = next_button_li.find_element(By.TAG_NAME, 'a')
                 
-                print(f"  Haciendo clic en 'Next →' para ir a la página {page_number + 1}")
-                driver.execute_script("arguments[0].click();", next_button)
+                print(f"  Pasando a la página {page_number + 1}...")
                 
-                time.sleep(2)
+                # Usar JavaScript click es a menudo más fiable
+                driver.execute_script("arguments[0].click();", next_button_a)
+                
+                # Espera explícita para que el contenido de la nueva página cargue
+                time.sleep(2) # Pausa estática para permitir que la página se actualice
+                
                 page_number += 1
                 
             except NoSuchElementException:
-                print("\nNo se encontró el botón 'Next →' o está deshabilitado. Se ha llegado a la última página.")
+                print("\n--- Fin del proceso: Se ha llegado a la última página. ---")
                 break
 
     except Exception as e:
-        print(f"Ocurrió un error principal: {e}")
-        screenshot_path = "debug_screenshot_fail.png"
+        print(f"\n¡ERROR! Ocurrió un error inesperado: {e}")
+        screenshot_path = "debug_screenshot.png"
         driver.save_screenshot(screenshot_path)
-        print(f"Se ha guardado una captura de pantalla en '{screenshot_path}'.")
+        print(f"Se ha guardado una captura de pantalla del error en '{screenshot_path}'.")
     
     finally:
         driver.quit()
-        if os.path.exists(OUTPUT_FOLDER):
-            final_count = len(os.listdir(OUTPUT_FOLDER))
-            print(f"\nNavegador cerrado. ¡Proceso terminado! Se han descargado {final_count} imágenes en la carpeta.")
-        else:
-            print("\nNavegador cerrado. ¡Proceso terminado!")
+        final_count = len(os.listdir(output_folder)) if os.path.exists(output_folder) else 0
+        print(f"Navegador cerrado. Total de imágenes descargadas para '{search_term}': {final_count}")
 
-# --- CORRECCIÓN APLICADA AQUÍ ---
+
 if __name__ == "__main__":
-    download_images_with_pagination(SEARCH_TERM)
+    run_scraper(SEARCH_TERM)
