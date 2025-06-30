@@ -13,7 +13,7 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 # --- CONFIGURACIÓN ---
 # ¡Cambia este término para cada artista que quieras descargar!
-SEARCH_TERM = "peru" 
+SEARCH_TERM = "Ecuador"
 # --- FIN DE CONFIGURACIÓN ---
 
 def sanitize_filename(filename):
